@@ -123,7 +123,13 @@ def parse_element(ele):
                 else:
                     text = f'{cloze_idx}::{text}'
                 cloze_idx += 1
-                text = f'{{{{c{text}}}}}'
+
+                end = ''
+                while text.endswith(' '):
+                    text = text[:-1]
+                    end += ' '
+
+                text = f'{{{{c{text}}}}}{end}'
             if CLASS_DICT['BOLD'] in ele['class']:
                 text = f'<b>{text}</b>'
             if CLASS_DICT['ITALIC'] in ele['class']:
@@ -147,8 +153,7 @@ def parse_element(ele):
         filename = image_id + extension
 
         this_data = {'path': img_path, 'filename': filename}
-        this_media = {'type': 'picture', 'data': this_data}
-        media = [this_media]
+        media = [this_data]
         new_tag['src'] = f"{filename}"
     else:
         text, e, media = parse_list(ele.children)
@@ -247,7 +252,8 @@ def parse_file(soup):
 
     def new_note():
         global cloze_idx
-        notes.append({'text': '', 'extra': '', 'tags': [tag], 'media': [], 'deck': get_deck_name(tag)})
+        notes.append({'text': '', 'extra': '', 'tags': [
+                     tag], 'media': [], 'deck': get_deck_name(tag)})
         cloze_idx = 1
 
     body = soup.find("body").children
@@ -271,7 +277,8 @@ def parse_file(soup):
             if m is not None and len(m) > 0:
                 notes[-1]['media'].extend(m)
 
-    to_return = []
+    to_return_notes = []
+    to_return_media = []
     for note in notes:
         if note['text'] == '':
             continue
@@ -283,10 +290,6 @@ def parse_file(soup):
             print('A card was discovered without a cloze deletion.')
             print(note)
             note['text'] += '{{c1::}}'
-
-        media_to_send = {}
-        for m in note['media']:
-            media_to_send[m['type']] = m['data']
 
         rearranged = {'deckName': note['deck'],
                       'modelName': "cloze",
@@ -300,11 +303,13 @@ def parse_file(soup):
                               "checkChildren": False,
                               "checkAllModels": False
                           }
-                      },
-                      **media_to_send
-                      }
-        to_return.append(rearranged)
-    return to_return
+        }}
+        to_return_notes.append(rearranged)
+        # check if media is already in the list
+        for m in note['media']:
+            if m not in to_return_media:
+                to_return_media.append(m)
+    return to_return_notes, to_return_media
 
 
 def parse():
@@ -326,15 +331,16 @@ def parse():
     with archive.open(file_name, mode="r") as fp:
         soup = BeautifulSoup(fp, "html.parser")
         parse_styles(soup)
-        notes = parse_file(soup)
+        notes, media = parse_file(soup)
 
-    return notes, extracted_locs
+    return notes, media, extracted_locs
 
 
 if __name__ == "__main__":
-    to_add, to_remove = parse()
+    to_add, to_store_media, to_remove = parse()
     print()
-    anki.auto_send(to_add)
+    anki.send_notes(to_add)
+    anki.send_media(to_store_media)
 
     for loc in to_remove:
         shutil.rmtree(loc)

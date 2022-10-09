@@ -35,7 +35,8 @@ def invoke(action, **params):
         return
 
 
-def auto_send(notes):
+def send_notes(notes):
+    print("Sending notes")
     # actions = [request('addNotes', notes=notes)]
     result = invoke('addNotes', notes=notes)
     rejected = []
@@ -50,3 +51,11 @@ def auto_send(notes):
     if rej_count > 0:
         print("The following notes were rejected by Anki:")
         print(*rejected, sep='\n')
+    print("Action complete")
+
+
+def send_media(media):
+    print("Sending media")
+    for m in media:
+        invoke('storeMediaFile', **m)
+    print("Action complete")
