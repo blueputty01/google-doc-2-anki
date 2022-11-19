@@ -133,7 +133,7 @@ def parse_element(ele):
             if CLASS_DICT['BOLD'] in ele['class']:
                 text = f'<b>{text}</b>'
             if CLASS_DICT['ITALIC'] in ele['class']:
-                text = f'<i>{text}</i>'
+                text = f'\\({text}\\)'
         if ele.name == 'p':
             text += '\n'
         return text, extra, media
@@ -319,8 +319,11 @@ def parse():
 
     try:
         archive = zipfile.ZipFile(INPUT_FILE, "r")
+    except zipfile.BadZipFile:
+        print("The file is not a valid zip file.")
+        return
     except FileNotFoundError:
-        print("File not found")
+        print("The file was not found.")
         return
     file_name = archive.namelist()[0]
     extracted_loc = INPUT_FILE.parents[0] / INPUT_FILE.stem
@@ -330,6 +333,8 @@ def parse():
 
     with archive.open(file_name, mode="r") as fp:
         soup = BeautifulSoup(fp, "html.parser")
+        if soup.find("br") is not None:
+            print("An unexpected <br> element was found. The file may be improperly formatted.")
         parse_styles(soup)
         notes, media = parse_file(soup)
 
@@ -337,7 +342,12 @@ def parse():
 
 
 if __name__ == "__main__":
-    to_add, to_store_media, to_remove = parse()
+    try:
+        to_add, to_store_media, to_remove = parse()
+    except TypeError:
+        print("Nothing was found")
+        input("Press enter to exit")
+        exit(0)
     print()
     anki.send_notes(to_add)
     anki.send_media(to_store_media)
