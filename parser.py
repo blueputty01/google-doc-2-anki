@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import zipfile
+import sys
 from pathlib import Path
 
 import cssutils
@@ -26,13 +27,16 @@ DECK_NAME_DICT = {
     'APUSH': 'AP US History',
     'Stat': 'AP Stat',
     'Calc': 'Math',
-    'Micro': 'AP Micro'
+    'Micro': 'AP Micro',
+    'Math': 'Math',
+    'Default': 'Default'
 }
 
 CLASS_DICT = {
     'UNDERLINE': 'NOT FOUND',
     'BOLD': 'NOT FOUND',
-    'ITALIC': 'NOT FOUND'
+    'ITALIC': 'NOT FOUND',
+    'UNDERLINEDITALIC': 'NOT FOUND'
 }
 
 cssutils.log.setLevel(logging.CRITICAL)
@@ -69,7 +73,10 @@ def parse_styles(page):
 
                 if style_name.startswith('c'):
                     if rule.style.textDecoration == 'underline':
-                        CLASS_DICT['UNDERLINE'] = style_name
+                        if rule.style.fontStyle == 'italic':
+                            CLASS_DICT['UNDERLINEDITALIC'] = style_name
+                        else:
+                            CLASS_DICT['UNDERLINE'] = style_name
                     elif rule.style.fontWeight == '700':
                         CLASS_DICT['BOLD'] = style_name
                     elif rule.style.fontStyle == 'italic':
@@ -103,7 +110,9 @@ def check_extra(ele):
     return hasattr(ele, 'attrs') and 'class' in ele.attrs and not set(ele['class']).isdisjoint(indents)
 
 
-def parse_element(ele):
+def parse_element(ele, parent_classes=None):
+    if parent_classes is None:
+        parent_classes = set()
     global cloze_idx
 
     if isinstance(ele, NavigableString):
@@ -116,26 +125,29 @@ def parse_element(ele):
         if e:
             extra = True
         if 'class' in ele.attrs:
-            if CLASS_DICT['UNDERLINE'] in ele['class']:
-                if re.match('^\\d+::', text):
-                    local_cloze_idx = int(text.split('::')[0])
-                    cloze_idx = local_cloze_idx
-                else:
-                    text = f'{cloze_idx}::{text}'
-                cloze_idx += 1
+            class_set = set(ele['class'])
+            if class_set & {CLASS_DICT['UNDERLINE'], CLASS_DICT['UNDERLINEDITALIC']}:
+                if not parent_classes & {CLASS_DICT['UNDERLINE']}:
+                    if re.match('^\\d+::', text):
+                        local_cloze_idx = int(text.split('::')[0])
+                        cloze_idx = local_cloze_idx
+                    else:
+                        text = f'{cloze_idx}::{text}'
+                    cloze_idx += 1
 
-                end = ''
-                while text.endswith(' '):
-                    text = text[:-1]
-                    end += ' '
+                    end = ''
+                    while text.endswith(' '):
+                        text = text[:-1]
+                        end += ' '
 
-                text = f'{{{{c{text}}}}}{end}'
+                    text = f'{{{{c{text}}}}}{end}'
             if CLASS_DICT['BOLD'] in ele['class']:
                 text = f'<b>{text}</b>'
-            if CLASS_DICT['ITALIC'] in ele['class']:
-                text = f'\\({text}\\)'
-        if ele.name == 'p':
-            text += '\n'
+            if class_set & {CLASS_DICT['ITALIC'], CLASS_DICT['UNDERLINEDITALIC']}:
+                if not (parent_classes & {CLASS_DICT['ITALIC']}):
+                    text = f'\\({text}\\)'
+            if ele.name == 'p':
+                text += '\n'
         return text, extra, media
 
     soup = BeautifulSoup()
@@ -175,13 +187,40 @@ def parse_list(soup_ele):
     parts = []
     extra = False
 
-    for ele in part_list:
+    formatters = {CLASS_DICT['ITALIC'], CLASS_DICT['UNDERLINE'], CLASS_DICT['UNDERLINEDITALIC']}
+
+    temp = None
+
+    def parse_local(ele):
+        nonlocal extra
         p, e, m = parse_element(ele)
         if e:
             extra = True
         parts.append(p)
         if m is not None and len(m) > 0:
             media.extend(m)
+
+    for ele in part_list:
+        ele_class = getattr(ele, 'attrs', {}).get('class', [])
+
+        if len(ele_class) > 0:
+            if not formatters.isdisjoint(ele['class']):
+                if temp is None:
+                    temp = ele
+                else:
+                    ele['class'] = list(set(ele['class']) - set(temp['class']))
+                    p, e, m = parse_element(ele, set(temp['class']))
+                    temp.append(p)
+                continue
+        if temp is not None:
+            parse_local(temp)
+            temp = None
+
+        parse_local(ele)
+
+    if temp is not None:
+        parse_local(temp)
+
     text = ''.join(parts)
     text = unicodedata.normalize("NFKD", text)
     if is_single and soup_ele.name == 'p':
@@ -193,23 +232,40 @@ def parse_list(soup_ele):
     return text, extra, media
 
 
-def clean_lists(body):
+def clean_html(body):
     global indents
 
     new_file = BeautifulSoup()
-    html_list = None
+    list_eles = None
+    formatting_eles = None
     level_offset = 0
 
-    def add_html_list():
-        nonlocal html_list
-        new_file.append(html_list)
-        html_list = None
+    def append_html_list():
+        nonlocal list_eles
+        new_file.append(list_eles)
+        list_eles = None
         pass
 
+    # def append_formatting():
+    #     nonlocal formatting_eles
+    #     new_file.append(formatting_eles)
+    #     formatting_eles = None
+    #     pass
+
     for b in body:
+        # if not {CLASS_DICT['ITALIC'], CLASS_DICT['BOLD']}.isdisjoint(b['class']):
+        #     formatting_ele_copy = copy.copy(b)
+        #     if formatting_eles is None:
+        #         formatting_eles = formatting_ele_copy
+        #     else:
+        #         formatting_eles.extend(formatting_ele_copy)
+        # else:
+        #     if formatting_eles is not None:
+        #         append_formatting()
+
         if b.name not in ['ol', 'ul']:
-            if html_list is not None:
-                add_html_list()
+            if list_eles is not None:
+                append_html_list()
             new_file.append(copy.copy(b))
             continue
 
@@ -223,13 +279,13 @@ def clean_lists(body):
             except ValueError:
                 pass
 
-        if html_list is None:
+        if list_eles is None:
             level_offset = current_level
-            html_list = copy.copy(b)
+            list_eles = copy.copy(b)
             continue
 
         # https://peps.python.org/pep-0448/
-        parent = html_list
+        parent = list_eles
         nesting = current_level - level_offset
         for idx in range(nesting):
             parent = parent.contents[-1]
@@ -239,8 +295,8 @@ def clean_lists(body):
         else:
             parent.append(copy.copy(b))
 
-    if html_list is not None:
-        add_html_list()
+    if list_eles is not None:
+        append_html_list()
 
     return new_file
 
@@ -253,12 +309,12 @@ def parse_file(soup):
     def new_note():
         global cloze_idx
         notes.append({'text': '', 'extra': '', 'tags': [
-                     tag], 'media': [], 'deck': get_deck_name(tag)})
+            tag], 'media': [], 'deck': get_deck_name(tag)})
         cloze_idx = 1
 
     body = soup.find("body").children
 
-    body = clean_lists(body)
+    body = clean_html(body)
 
     for b in body:
         if b.text.strip() == '':
@@ -303,7 +359,7 @@ def parse_file(soup):
                               "checkChildren": False,
                               "checkAllModels": False
                           }
-        }}
+                      }}
         to_return_notes.append(rearranged)
         # check if media is already in the list
         for m in note['media']:
@@ -342,12 +398,14 @@ def parse():
 
 
 if __name__ == "__main__":
-    try:
-        to_add, to_store_media, to_remove = parse()
-    except TypeError:
-        print("Nothing was found")
-        input("Press enter to exit")
-        exit(0)
+    to_add, to_store_media, to_remove = parse()
+    # try:
+    #     to_add, to_store_media, to_remove = parse()
+    # except TypeError as e:
+    #     print(e)
+    #     print("Nothing was found")
+    #     input("Press enter to exit")
+    #     sys.exit(0)
     print()
     anki.send_notes(to_add)
     anki.send_media(to_store_media)
@@ -358,3 +416,4 @@ if __name__ == "__main__":
     i = input("Delete? (Y/n) ")
     if i == "Y":
         os.remove(INPUT_FILE)
+    sys.exit(0)
